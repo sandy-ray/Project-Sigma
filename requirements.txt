@@ -1,0 +1,3 @@
+augly
+PyMuPDF
+Pillow
