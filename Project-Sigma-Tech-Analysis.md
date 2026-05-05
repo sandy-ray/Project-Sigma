@@ -1,3 +1,7 @@
+# Introductory Overview
+
+(TBD: to include a visual depiction of the overall functionality once the complete document is written.)
+
 # The Document Intelligence Pipeline
 The document intelligence pipeline represents the foundational system layer upon which all downstream functionality depends. The quality of output from this pipeline directly determines system reliability. 
 
@@ -148,7 +152,7 @@ Precision regarding the problem this element solves is essential, as its complex
 
 The pipeline produces a collection of extracted facts, each annotated with *source document*, *confidence score*, and *provenance reference*. At this stage, the system possesses fundamentally a structured collection of potentially conflicting claims regarding the same borrower. The normalized data model and reconciliation engine transforms this collection into a single coherent, conflict-aware, evidence-backed representation of borrower financial reality. Downstream components — the exception engine, the memo generator, the evidence viewer — operate on this canonical representation. The quality of this reconciliation directly determines whether the system functions as a genuinely useful credit intelligence tool or remains a document viewer with limited analytical capability.
 
-## Part 1: The Canonical Data Model
+## The Canonical Data Model
 
 The initial design challenge requires defining the canonical representation of a borrower — the schema to which all extracted facts ultimately map.
 
@@ -173,7 +177,7 @@ The **collateral layer** captures credit facility security—A/R eligible for bo
 The **relationship and policy layer** captures credit structure—facility type, amount, maturity, covenants, prior exceptions, and relationship history—derived primarily from prior credit memos and borrower applications.
 
 
-## Part 2: The Conflict Group Structure
+## The Conflict Group Structure
 
 The Conflict Group represents the most critical structural element in the data model. Although the PRD identifies this element, precision regarding its contents and operational mechanics proves essential.
 
@@ -194,7 +198,7 @@ A Conflict Group is created when two or more sourced values for an identical fie
 A critical design consideration: **not every multi-source field constitutes a conflict.** When multiple documents report identical values, this represents corroboration—high confidence and source alignment. The model must represent corroboration explicitly as the positive signal that increases value confidence. Conflict represents the negative signal that generates exceptions. Both phenomena require explicit representation.
 
 
-## Part 3: The Reconciliation Engine
+## The Reconciliation Engine
 
 The reconciliation engine is the process that consumes extracted facts from the pipeline and produces the populated canonical model with conflict groups. It executes after all documents within a packet complete pipeline processing.
 
@@ -211,7 +215,7 @@ The reconciliation engine is the process that consumes extracted facts from the 
 **Step 6: Derived value computation.** Following normalization, derived values are computed deterministically from normalized values: DSCR, leverage ratios, working capital, borrowing base capacity, customer concentration percentages. Derived values function as first-class canonical model fields, with computation inputs recorded for provenance. This computation occurs in the reconciliation engine rather than exception engine, enabling the exception engine to treat derived values identically to extracted fields for threshold evaluation.
 
 
-## Part 4: The Hard Problems
+## The Hard Problems
 
 Three fundamentally challenging problems merit specific attention prior to any implementation decisions.
 
@@ -222,7 +226,7 @@ Three fundamentally challenging problems merit specific attention prior to any i
 **Hard problem 3: Handling structural differences in financial statements.** Income statements lack uniform structure. Manufacturers present COGS and gross profit. Service businesses may present direct costs via alternative structures. Pass-through entities (LLC, S-corp) exhibit different tax return structure than C-corps. The canonical model must accommodate these structural variations without imposing a rigid schema unsuited to real-world documents. The appropriate approach likely employs a **two-layer schema**: a flexible extraction layer preserving document-specific structure, and a canonical layer mapping to standardized concepts where unambiguous mappings exist, with unmapped items retained as document-specific fields.
 
 
-## Part 5: AWS Architecture for This Element
+## AWS Architecture for This Element
 
 On AWS, this element occupies the intermediary position between the pipeline (producing extracted facts) and the exception engine and application layer (consuming the canonical model).
 
