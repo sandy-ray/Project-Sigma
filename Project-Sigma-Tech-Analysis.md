@@ -343,12 +343,13 @@ The naive approach — sort by severity descending — is necessary but not suff
 
 **Grouping by topic.** Related exceptions should be visually grouped even if they have different severities. The three debt-related exceptions in the Harborview scenario (debt mismatch across three sources, borrowing base shortfall, cash flow contradiction) are thematically connected — presenting them together helps the analyst understand the pattern rather than treating each in isolation.
 
-> Just to go a bit deeper into how the topic will be determined, here is my current thought - Maintain a configurable mapping that groups exception types (not rules) by topic. When the exception engine generates an exception, it assigns both the exception type and (via lookup) the topic. Following table gives some example entries for such mappings --
+> Just to go a bit deeper into how the topic can be determined, here is my current thought - Maintain a configurable mapping that groups exception types (not rules) by topic. When the exception engine generates an exception, it assigns both the exception type and (via lookup) the topic. Following table gives some example entries for such mappings --
 
 > | exception_type          | field_category     | topic |
 > |------------------------|--------------------|-------------------|
 > | field_inconsistency     | debt.total         | debt_structure |
 > | analytical_threshold    | debt.coverage      | debt_structure |
+> | analytical_threshold    | leverage_ratio     | profitability |
 > | ...  | ... | ... |
 
 **Suppression of redundant exceptions.** If the reconciliation engine has already created a conflict group for a revenue discrepancy, and the exception engine generates both a "field inconsistency" exception and an "analytical threshold breach" exception that both trace to the same underlying conflict, those should be linked and presented as one composite exception rather than two separate items. Redundant exceptions are a primary source of false-positive noise.
@@ -360,6 +361,16 @@ This is the engine's hardest calibration challenge and the PRD's most significan
 **Tolerance calibration is iterative.** The initial tolerance thresholds will be wrong. They'll be set based on reasonable assumptions about what constitutes a meaningful discrepancy, but real document packets will reveal that some thresholds are too tight (generating noise on normal variance) and some are too loose (missing real exceptions). The system needs a feedback mechanism — analyst override patterns and explicit false-positive flags — that feeds back into threshold calibration over time. This is not something you can fully design upfront; it requires a closed loop between analyst behavior and rule parameters.
 
 **Definitional variance is not conflict.** Many apparent discrepancies between sources are expected and explainable by definition differences, not by actual inconsistency. Tax return revenue excludes certain items that GAAP financials include. Interim financials may use different accrual conventions than year-end audited statements. The exception engine needs to be aware of these known definitional differences and suppress exceptions that fall within expected definitional variance bands for specific field-source combinations. This is a domain knowledge problem — the system needs to encode credit analysis conventions, not just apply generic thresholds.
+> While I highlight it as different from Tolerance caliberation, it is somewhat related. There can be a tolerance map for different sources which the system can use for this purpose --
+
+> | field_category | source_a           | source_b              | expected_variance_band | reason |
+> |----------------|--------------------|-----------------------|------------------------|-------------------------------- |
+> | revenue         | tax_return         | gaap_financials       | 0-5%                   | Tax return excludes certain GAAP adjustments; timing differences |
+> | revenue         | interim_financials | year_end_audited      | 1-3%                   | Different accrual conventions; cutoff timing |
+> | ar_total        | ar_aging_report    | balance_sheet         | 0-2%                   | Minor posting differences, timing |
+> | ebitda          | company_financials | tax_return            | 5-8%                   | Tax return adds back non-deductible items |
+
+> Open question - does this belong in the Reconciliation Engine, or in Exception Engine? There are pros and cons for both. I am thinking Reconciliation Engine should NOT suppress it, and let Exception Engine be configured to ignore it as necessary.
 
 **Confidence-gated exception generation.** Exceptions generated from low-confidence extracted values are themselves low-confidence. A field inconsistency exception where both values were extracted by LLM from narrative text with 60% confidence is qualitatively different from one where both values were extracted deterministically from structured tax forms. The engine should either suppress exceptions below a minimum input confidence threshold, or downgrade their severity automatically, with a clear signal to the analyst about why.
 
@@ -375,7 +386,11 @@ Detecting these requires a two-step process that spans the reconciliation engine
 
 **Step 1: Narrative claim extraction.** During the pipeline's extraction stage, the LLM must be prompted not just to extract structured fields but to identify and extract specific assertional claims from narrative text — claims about concentration, profitability trends, relationship depth, collateral quality, management strength. These claims need to be stored as a distinct fact type in the canonical model, tagged as narrative assertions rather than financial values.
 
+> It will be important to either explicitly ennumerate the specific assertions to be extracted, or the characteristics of the assertions that are relevant for the domain of the problem this solution concerns itself with.
+
 **Step 2: Contradiction evaluation.** The exception engine compares each narrative assertion against the relevant computed or extracted value. This comparison is itself a judgment call — "no material concentration" versus 18% — that requires either a rule encoding what "material concentration" means numerically, or an LLM evaluation that assesses whether the quantitative evidence contradicts the narrative claim.
+
+> as noted in the sidebar above, along with ennumerating the specific assertions to extract, semantic equivalence of the assertion to a quantified value will be required. Just a clarification, this can't be left to the LLM to judge that 18% is or isn't "material concentration".
 
 This is one of the places where LLM involvement in the exception engine is justified — not for making the exception determination, but for evaluating semantic consistency between a narrative claim and a quantitative finding. The LLM's output should be a structured assessment (contradiction detected / not detected / ambiguous) with a confidence score, and the exception engine's rule then determines whether that assessment clears the threshold for exception generation. The LLM evaluates; the rule decides.
 
@@ -397,4 +412,4 @@ The exception engine is architecturally simpler than the reconciliation engine b
 
 The exception engine's job is to be **a signal, not a checklist**. The distinction matters enormously for analyst adoption. A checklist produces a complete list of everything that could be wrong. A signal produces a ranked, evidence-backed, noise-controlled set of the things most likely to actually matter for this credit decision. The engineering discipline required to be a signal rather than a checklist — tolerance calibration, redundancy suppression, confidence gating, analytical prioritization — is harder than building the rules themselves. But it's what determines whether analysts trust the tool or learn to ignore it.
 
-This element connects forward to two things: the **provenance system**, which needs to make every exception's evidence chain navigable in the UI, and the **workflow state machine**, which manages how exceptions move through resolution states and how those states flow into the memo and the export. Shall we move to one of those next, or would you like to go deeper on any aspect of the exception engine?
+This element connects forward to two things: the **provenance system**, which needs to make every exception's evidence chain navigable in the UI, and the **workflow state machine**, which manages how exceptions move through resolution states and how those states flow into the memo and the export.
