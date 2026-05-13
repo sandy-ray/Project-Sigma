@@ -243,3 +243,158 @@ On AWS, this element occupies the intermediary position between the pipeline (pr
 The reconciliation engine must function as **a witness, not a judge**. It observes all evidence, organizes evidence, applies mechanical rules to propose resolution, and renders every process step visible and reversible. The engine must never silently discard conflicting values, never apply judgment unencoded in configurable rules, and never produce normalized values whose derivation cannot be fully traced. Opaque engine decision-making directly undermines analyst trust—the product's foundational value proposition.
 
 This element directly feeds the next two — the exception engine consumes the normalized values and conflict groups to generate exceptions, and the provenance system uses the fact mapping and source references to power the evidence viewer.
+
+
+
+# The Exception Engine Design
+
+> **NOTE: This is an initial thought regarding this capability. Needs to be discussed further to finalize.**
+
+> **This is also not an AI capability, it instead requires much depth in domain understanding - personally, my confidence on the contents of this section also is low; to be validated through design-partner discovery conversations. - Atul**
+
+Before getting into the architecture, it's worth being precise about the engine's exact role in the system. The exception engine sits downstream of the reconciliation engine and consumes a fully populated canonical model — normalized values, conflict groups, derived metrics, and resolution states. Its job is to evaluate that model against a set of rules and produce a ranked, prioritized list of exceptions that an analyst needs to act on. It does not extract, reconcile, or judge — it evaluates and signals.
+
+That distinction matters because it defines the engine's design constraints precisely: it must be **deterministic**, **configurable**, **transparent**, and **noise-controlled**. Every one of those constraints creates real engineering tension that needs to be thought through before implementation begins.
+
+## The Three-Layer Rule Architecture
+
+The PRD identifies eight exception types which is helpful, but the organizing principle for engineering purposes is to think about the rule set in three distinct layers, each with different engineering requirements and different calibration challenges.
+
+**Layer 1: Universal Rules**
+
+These apply to every borrower packet regardless of bank, loan type, or jurisdiction. They are binary and require no configuration — either the condition is met or it isn't.
+
+Missing document rules fall here. If the document checklist for a given loan type requires a business tax return and none was classified in the packet, that is an exception. The rule is: required document type X is absent → exception of type "missing document" at configured severity. The document checklist itself is configurable per loan type and per bank, but the rule logic is universal.
+
+Basic tie-out failures also fall here. If the accounts-receivable (A/R) aging report total doesn't match the A/R line on the balance sheet within any reasonable tolerance, that's a tie-out failure regardless of which bank is using the system. The reconciliation engine has already computed both values and flagged the conflict group — the exception engine's job here is simply to recognize that certain conflict groups of this type constitute a specific exception category.
+
+Stale document rules fall here too. If a document's date is beyond the configured freshness threshold, it's stale. Binary evaluation, configurable threshold, universal logic.
+
+**Layer 2: Configurable Policy Rules**
+
+These rules have universal logic but bank-specific parameters. The rule structure is identical across institutions; the threshold values differ.
+
+Variance tolerance rules are the clearest example. The rule is: if the normalized value for field X differs from source Y by more than threshold T, generate an exception. The rule structure is fixed. T is configured per field category per bank. One bank may treat a 3% revenue variance as acceptable; another may flag anything above 1%.
+
+Freshness thresholds are similar. The rule structure is: document dated more than N days before review date → stale document exception. N is bank-configured, and may vary by document type within the same bank (tax returns might have a longer acceptable window than interim financials).
+
+Severity mappings also live here. The same exception type might be Material at one bank and Administrative at another depending on their risk appetite and credit policy. The severity mapping table is bank-level configuration that the exception engine applies when assigning severity to a generated exception.
+
+**Layer 3: Analytical Rules**
+
+These are the most complex and the most valuable — they require computed financial metrics and evaluate them against defined thresholds. They are also the most likely to produce meaningful exceptions that wouldn't be caught by a human analyst doing a quick first pass.
+
+DSCR evaluation is the canonical example. The reconciliation engine has computed DSCR from normalized cash flow and normalized debt service figures. The exception engine evaluates: is computed DSCR below the configured minimum covenant threshold? If yes, this is an exception. If the DSCR computation involved low-confidence inputs, the exception should note that — the reliability of the exception is partly a function of the reliability of the inputs.
+
+Borrowing base coverage is another example directly from the Harborview scenario. The engine computes eligible collateral from the A/R aging (applying advance rate, excluding ineligible receivables) and compares to the requested facility amount. If eligible collateral supports $1.42M and the requested revolver is $1.85M, that's a Critical exception. The math is deterministic; the advance rate and eligibility criteria are configurable.
+
+Customer concentration follows the same pattern. The engine computes the percentage of A/R attributable to the single largest customer from the aging report. If that percentage exceeds the configured concentration threshold, exception generated. If the prior credit memo's narrative states "no material concentration" and the computed percentage exceeds the threshold, that's a narrative contradiction exception — a more specific and higher-severity variant.
+
+Leverage ratio, working capital adequacy, and trend analysis (year-over-year revenue decline, margin compression) all follow the same pattern: deterministic computation from normalized values, threshold comparison from bank configuration, exception generation if threshold is breached.
+
+## The Exception Data Structure
+
+Every exception the engine generates needs to carry a precise set of fields. This is not just a data model question — the structure of an exception determines what the analyst sees, what the evidence viewer can display, and what the audit trail records.
+
+**Exception identity and classification:**
+- Unique exception ID
+- Exception type (from the PRD's taxonomy: missing document, stale document, field inconsistency, tie-out failure, narrative contradiction, analytical threshold breach, low-confidence extraction, source precedence conflict)
+- Severity (Critical, Material, Administrative, Informational)
+- Generating rule identifier — which specific rule produced this exception
+
+**The evidence chain:**
+- The canonical field(s) involved
+- The normalized value(s) that triggered the rule
+- The conflict group reference if applicable
+- The specific source documents involved
+- The text span references from OCR output
+
+**The analytical context:**
+- For threshold breach exceptions: the computed value, the threshold, and the margin of breach
+- For conflict exceptions: all competing values, their sources, and the precedence determination
+- For narrative contradiction exceptions: the narrative claim, the computed or extracted value that contradicts it, and both source references
+
+**Confidence qualification:**
+- Input confidence — the aggregate confidence of the extracted values that fed the rule evaluation
+- Exception confidence — how confident the engine is that this is a genuine exception versus a false positive, which is partly a function of input confidence and partly a function of rule specificity
+
+**Resolution state:**
+- Unresolved (initial state)
+- Acknowledged (analyst has seen it, no action yet)
+- Accepted (analyst confirms this is a real exception, it will appear in the memo)
+- Resolved with explanation (analyst has provided context that explains the discrepancy — it stays in the record but is marked resolved)
+- Overridden (analyst disagrees with the exception — requires a note explaining why)
+- Escalated (flagged for credit officer review)
+- Follow-up requested (a question has been sent to the relationship manager or borrower)
+
+## The Ranking and Prioritization Logic
+
+> **This my perception of the ranking. Please review.**
+
+Generating exceptions is only half the job. The other half is presenting them in an order that maximizes analyst efficiency and minimizes the cognitive load of working through a long exception list.
+
+The naive approach — sort by severity descending — is necessary but not sufficient. A packet with twelve Critical exceptions all listed in a flat list is still overwhelming. The ranking logic needs to be more sophisticated:
+
+**Primary sort: severity.** Critical exceptions always appear first, then Material, then Administrative, then Informational.
+
+**Secondary sort within severity: analytical exceptions before documentary ones.** A Critical analytical exception (borrowing base shortfall, DSCR breach) is more decision-relevant than a Critical missing document. The analyst needs to understand the financial picture before evaluating whether a missing document matters.
+
+**Tertiary sort: exception confidence.** Within the same type and severity, higher-confidence exceptions should appear before lower-confidence ones. A tie-out failure computed from high-confidence extracted values is more actionable than one computed from low-confidence LLM extractions.
+
+**Grouping by topic.** Related exceptions should be visually grouped even if they have different severities. The three debt-related exceptions in the Harborview scenario (debt mismatch across three sources, borrowing base shortfall, cash flow contradiction) are thematically connected — presenting them together helps the analyst understand the pattern rather than treating each in isolation.
+
+> Just to go a bit deeper into how the topic will be determined, here is my current thought - Maintain a configurable mapping that groups exception types (not rules) by topic. When the exception engine generates an exception, it assigns both the exception type and (via lookup) the topic. Following table gives some example entries for such mappings --
+
+> | exception_type          | field_category     | topic |
+> |------------------------|--------------------|-------------------|
+> | field_inconsistency     | debt.total         | debt_structure |
+> | analytical_threshold    | debt.coverage      | debt_structure |
+> | ...  | ... | ... |
+
+**Suppression of redundant exceptions.** If the reconciliation engine has already created a conflict group for a revenue discrepancy, and the exception engine generates both a "field inconsistency" exception and an "analytical threshold breach" exception that both trace to the same underlying conflict, those should be linked and presented as one composite exception rather than two separate items. Redundant exceptions are a primary source of false-positive noise.
+
+## The Noise Control Problem
+
+This is the engine's hardest calibration challenge and the PRD's most significant risk. The ≤25% false-positive target is important but ambitious, and hitting it requires deliberate engineering rather than hoping the rules are well-tuned.
+
+**Tolerance calibration is iterative.** The initial tolerance thresholds will be wrong. They'll be set based on reasonable assumptions about what constitutes a meaningful discrepancy, but real document packets will reveal that some thresholds are too tight (generating noise on normal variance) and some are too loose (missing real exceptions). The system needs a feedback mechanism — analyst override patterns and explicit false-positive flags — that feeds back into threshold calibration over time. This is not something you can fully design upfront; it requires a closed loop between analyst behavior and rule parameters.
+
+**Definitional variance is not conflict.** Many apparent discrepancies between sources are expected and explainable by definition differences, not by actual inconsistency. Tax return revenue excludes certain items that GAAP financials include. Interim financials may use different accrual conventions than year-end audited statements. The exception engine needs to be aware of these known definitional differences and suppress exceptions that fall within expected definitional variance bands for specific field-source combinations. This is a domain knowledge problem — the system needs to encode credit analysis conventions, not just apply generic thresholds.
+
+**Confidence-gated exception generation.** Exceptions generated from low-confidence extracted values are themselves low-confidence. A field inconsistency exception where both values were extracted by LLM from narrative text with 60% confidence is qualitatively different from one where both values were extracted deterministically from structured tax forms. The engine should either suppress exceptions below a minimum input confidence threshold, or downgrade their severity automatically, with a clear signal to the analyst about why.
+
+**The false-positive feedback loop.** When an analyst marks an exception as overridden or as a false positive, that signal needs to be captured in a structured way — not just as a free-text note, but as a tagged event that records which rule generated the exception, what the input values were, and what the analyst's override rationale was. Over time, these signals should feed a rule calibration review process. This won't be automated in MVP, but the data capture needs to be there from day one so that the calibration work can happen based on real analyst behavior.
+
+## The Narrative Contradiction Exception — A Special Case
+
+This exception type deserves its own treatment because it's architecturally distinct from all others and it's one of the highest-value exception types in the product.
+
+A narrative contradiction occurs when a claim made in a narrative document (the prior credit memo, the borrower application, management commentary) is contradicted by a computed or extracted value. The Harborview examples are clear: the prior memo says "no material customer concentration" but the A/R aging shows 18% to one customer. The borrower application narrative implies strong liquidity but the working capital computation shows it's under pressure.
+
+Detecting these requires a two-step process that spans the reconciliation engine and the exception engine:
+
+**Step 1: Narrative claim extraction.** During the pipeline's extraction stage, the LLM must be prompted not just to extract structured fields but to identify and extract specific assertional claims from narrative text — claims about concentration, profitability trends, relationship depth, collateral quality, management strength. These claims need to be stored as a distinct fact type in the canonical model, tagged as narrative assertions rather than financial values.
+
+**Step 2: Contradiction evaluation.** The exception engine compares each narrative assertion against the relevant computed or extracted value. This comparison is itself a judgment call — "no material concentration" versus 18% — that requires either a rule encoding what "material concentration" means numerically, or an LLM evaluation that assesses whether the quantitative evidence contradicts the narrative claim.
+
+This is one of the places where LLM involvement in the exception engine is justified — not for making the exception determination, but for evaluating semantic consistency between a narrative claim and a quantitative finding. The LLM's output should be a structured assessment (contradiction detected / not detected / ambiguous) with a confidence score, and the exception engine's rule then determines whether that assessment clears the threshold for exception generation. The LLM evaluates; the rule decides.
+
+## AWS Architecture for the Exception Engine
+
+The exception engine is architecturally simpler than the reconciliation engine because it's primarily a rule evaluation process over a well-structured data model.
+
+**The rule engine itself** is most naturally implemented as a Python service — a set of rule evaluator classes, one per exception type, each taking the canonical model as input and returning a list of candidate exceptions. This runs on **ECS or Lambda**, triggered by Step Functions when the reconciliation engine completes. It's a stateless computation — given the same canonical model, it always produces the same exceptions — which makes it easy to test, debug, and re-run when rules are updated.
+
+**Rule configuration storage** needs to live in a structured, versioned store. Bank-level configuration (thresholds, severity mappings, document checklists, freshness windows) should be stored in **RDS** alongside the rest of the relational data model, with a versioning mechanism so that changes to a bank's configuration don't retroactively alter the exception evaluation of previously processed packets. When you re-evaluate a packet, you should be able to specify which configuration version was in effect at the time of the original review.
+
+**The LLM component for narrative contradiction** runs via **Bedrock**, with the narrative assertion and the relevant quantitative finding injected into a structured prompt. The output is stored as a typed fact — not a free-text analysis — and the exception generation rule operates on that structured output.
+
+**Exception storage** in **RDS** with full relational integrity — exceptions link to canonical fields, conflict groups, source documents, and extracted facts via foreign keys. This is the provenance chain for exceptions, and it needs to be as rigorous as the provenance chain in the pipeline.
+
+**Re-evaluation triggers** need to be designed explicitly. When an analyst overrides a normalized value in the reconciliation engine, the exceptions that depend on that value need to be re-evaluated. When a new document is uploaded to an existing packet, affected exceptions need to be flagged for re-evaluation. This re-evaluation logic — which exceptions are invalidated by which changes to the canonical model — is a dependency graph problem that needs to be modeled carefully. Getting it wrong means stale exceptions persisting in the UI after the underlying data has changed.
+
+## The Key Design Principle for This Element
+
+The exception engine's job is to be **a signal, not a checklist**. The distinction matters enormously for analyst adoption. A checklist produces a complete list of everything that could be wrong. A signal produces a ranked, evidence-backed, noise-controlled set of the things most likely to actually matter for this credit decision. The engineering discipline required to be a signal rather than a checklist — tolerance calibration, redundancy suppression, confidence gating, analytical prioritization — is harder than building the rules themselves. But it's what determines whether analysts trust the tool or learn to ignore it.
+
+This element connects forward to two things: the **provenance system**, which needs to make every exception's evidence chain navigable in the UI, and the **workflow state machine**, which manages how exceptions move through resolution states and how those states flow into the memo and the export. Shall we move to one of those next, or would you like to go deeper on any aspect of the exception engine?
