@@ -1,0 +1,11 @@
+sigma-auth.db
+sigma-auth.db-shm
+sigma-auth.db-wal
+eridant-auth.db
+eridant-auth.db-shm
+eridant-auth.db-wal
+.env
+erident-auth.db
+erident-auth.db-shm
+erident-auth.db-wal
+demo-accounts.local.txt
