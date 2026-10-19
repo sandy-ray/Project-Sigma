@@ -1,2 +1,0 @@
-# Eridant uses the Python standard library only.
-# This file exists so hosts such as Render can run: pip install -r requirements.txt
